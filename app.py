@@ -7,6 +7,7 @@ from datetime import datetime
 import asyncio
 import aiohttp
 import pandas as pd
+import csv
 from flask import Flask, request, jsonify, render_template, send_file
 from werkzeug.utils import secure_filename
 import os
@@ -15,14 +16,33 @@ from tqdm import tqdm
 app = Flask(__name__)
 
 UPLOAD_FOLDER = 'uploads'
+RESULTS_FOLDER = 'results'
 ALLOWED_EXTENSIONS = {'csv'}
 CHUNK_SIZE = 10000  # Process URLs in chunks of 10000
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+app.config['RESULTS_FOLDER'] = RESULTS_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(RESULTS_FOLDER, exist_ok=True)
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def find_url_columns(df):
+    url_columns = [col for col in df.columns if 'url' in col.lower()]
+    app.logger.info(f"Columns in DataFrame: {df.columns.tolist()}")
+    app.logger.info(f"URL columns found: {url_columns}")
+    return url_columns
+
+def read_csv_with_custom_header(file_path):
+    with open(file_path, 'r') as f:
+        first_line = f.readline().strip()
+        if first_line.startswith('sep='):
+            separator = first_line[-1]
+            df = pd.read_csv(file_path, sep=separator, skiprows=[0])
+        else:
+            df = pd.read_csv(file_path)
+    return df
 
 async def analyze_url(url, session):
     try:
@@ -166,11 +186,13 @@ def export_results(result, format, client_name):
     
     if format == 'json':
         filename = f"{filename_base}.json"
-        with open(filename, 'w') as f:
+        file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
+        with open(file_path, 'w') as f:
             json.dump(result, f, indent=2, default=lambda x: list(x.items()) if isinstance(x, Counter) else x)
     elif format == 'txt':
         filename = f"{filename_base}.txt"
-        with open(filename, 'w') as f:
+        file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
+        with open(file_path, 'w') as f:
             f.write("URL Analysis Results\n\n")
             f.write("Insights:\n")
             for insight in result['insights']:
@@ -189,33 +211,52 @@ def export_results(result, format, client_name):
                 f.write(f"  {ngram}: {count}\n")
     elif format == 'csv':
         filename = f"{filename_base}.csv"
+        file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
         df = pd.DataFrame([(k, v) for k, v in result['ngrams'].items()], columns=['Ngram', 'Count'])
         df = df.sort_values('Count', ascending=False)
-        df.to_csv(filename, index=False)
+        df.to_csv(file_path, index=False)
     
     return filename
+
+def find_url_columns(df):
+    return [col for col in df.columns if 'url' in col.lower()]
+
+@app.route('/list_files', methods=['GET'])
+def list_files():
+    files = [f for f in os.listdir(UPLOAD_FOLDER) if allowed_file(f)]
+    return jsonify(files)
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file part'})
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No selected file'})
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
+        client_name = request.form.get('client_name', 'unnamed_client')
+        
+        file_path = None
+        
+        if 'file' in request.files and request.files['file'].filename != '':
+            file = request.files['file']
+            if file and allowed_file(file.filename):
+                filename = secure_filename(file.filename)
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                file.save(file_path)
+        elif 'selected_file' in request.form and request.form['selected_file'] != '':
+            filename = request.form['selected_file']
             file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            file.save(file_path)
+        
+        if not file_path:
+            return jsonify({'error': 'No file selected or uploaded'})
+        
+        # Process the file
+        try:
+            df = read_csv_with_custom_header(file_path)
+            app.logger.info(f"CSV file read successfully. Shape: {df.shape}")
+            url_columns = find_url_columns(df)
             
-            client_name = request.form.get('client_name', 'unnamed_client')
+            if not url_columns:
+                return jsonify({'error': f"No column containing 'URL' found in the CSV file. Columns found: {', '.join(df.columns.tolist())}"})
             
-            # Process the file
-            df = pd.read_csv(file_path)
-            url_column = next((col for col in df.columns if 'url' in col.lower()), None)
-            if url_column is None:
-                return jsonify({'error': "No column containing 'URL' found in the CSV file."})
-            
+            # If multiple URL columns are found, use the first one
+            url_column = url_columns[0]
             urls = df[url_column].dropna().tolist()
             
             # Run the analysis
@@ -235,13 +276,19 @@ def upload_file():
                 'csv_file': csv_file,
                 'insights': results['insights'],
                 'segmentation_suggestions': results['segmentation_suggestions'][:5],
-                'top_ngrams': dict(sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10])
+                'top_ngrams': dict(sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]),
+                'url_column_used': url_column
             })
+        except Exception as e:
+            app.logger.error(f"Error processing file: {str(e)}")
+            app.logger.error(traceback.format_exc())
+            return jsonify({'error': f"Error processing file: {str(e)}"})
+    
     return render_template('upload.html')
 
 @app.route('/download/<filename>')
 def download_file(filename):
-    return send_file(filename, as_attachment=True)
+    return send_file(os.path.join(app.config['RESULTS_FOLDER'], filename), as_attachment=True)
 
 if __name__ == '__main__':
     app.run(debug=True)

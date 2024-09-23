@@ -15,12 +15,13 @@
         }
         h1, h2, h3 { color: #bb86fc; }
         form { margin-bottom: 20px; }
-        input[type="file"], input[type="text"] {
+        input[type="file"], input[type="text"], select {
             background-color: #2e2e2e;
             color: #ffffff;
             border: 1px solid #bb86fc;
             padding: 5px;
             margin-bottom: 10px;
+            width: 100%;
         }
         button {
             background-color: #bb86fc;
@@ -29,30 +30,67 @@
             padding: 10px 20px;
             cursor: pointer;
             font-size: 16px;
+            margin-right: 10px;
         }
         button:hover { background-color: #9966cc; }
         #results { display: none; }
         #loading { display: none; color: #03dac6; }
         a { color: #03dac6; }
         pre { background-color: #2e2e2e; padding: 10px; border-radius: 5px; }
+        .error { color: #cf6679; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <h1>URL Analysis Tool</h1>
     <form id="upload-form" enctype="multipart/form-data">
         <input type="text" name="client_name" placeholder="Client Name" required><br>
-        <input type="file" name="file" accept=".csv" required><br>
+        <input type="file" name="file" accept=".csv" id="file-upload"><br>
+        <select id="file-select" name="selected_file">
+            <option value="">Select a previously uploaded file</option>
+        </select><br>
         <button type="submit">Analyze URLs</button>
+        <button type="button" id="refresh-files">Refresh File List</button>
     </form>
+    <div id="error" class="error"></div>
     <div id="loading">Analyzing... This may take a while for large datasets.</div>
     <div id="results"></div>
 
     <script>
+        function loadFiles() {
+            fetch('/list_files')
+                .then(response => response.json())
+                .then(files => {
+                    const select = document.getElementById('file-select');
+                    select.innerHTML = '<option value="">Select a previously uploaded file</option>';
+                    files.forEach(file => {
+                        const option = document.createElement('option');
+                        option.value = file;
+                        option.textContent = file;
+                        select.appendChild(option);
+                    });
+                })
+                .catch(error => {
+                    console.error('Error loading files:', error);
+                });
+        }
+
+        document.getElementById('refresh-files').addEventListener('click', loadFiles);
+
         document.getElementById('upload-form').addEventListener('submit', function(e) {
             e.preventDefault();
-            var formData = new FormData(this);
+            var fileUpload = document.getElementById('file-upload');
+            var fileSelect = document.getElementById('file-select');
+            var errorDiv = document.getElementById('error');
             var loading = document.getElementById('loading');
             var results = document.getElementById('results');
+            
+            if (fileUpload.files.length === 0 && fileSelect.value === '') {
+                errorDiv.textContent = 'Please either upload a new file or select an existing file.';
+                return;
+            }
+            
+            errorDiv.textContent = '';
+            var formData = new FormData(this);
             
             loading.style.display = 'block';
             results.style.display = 'none';
@@ -64,14 +102,16 @@
             .then(response => response.json())
             .then(data => {
                 loading.style.display = 'none';
-                results.style.display = 'block';
                 if (data.error) {
-                    results.innerHTML = '<p>Error: ' + data.error + '</p>';
+                    errorDiv.textContent = 'Error: ' + data.error;
+                    results.style.display = 'none';
                 } else {
+                    results.style.display = 'block';
                     var content = '<h2>Analysis Results</h2>';
-                    content += '<p><a href="/download/' + data.json_file + '">Download JSON Results</a></p>';
-                    content += '<p><a href="/download/' + data.txt_file + '">Download TXT Results</a></p>';
-                    content += '<p><a href="/download/' + data.csv_file + '">Download CSV Results (Ngram Analysis)</a></p>';
+                    content += '<p>URL column used: <strong>' + data.url_column_used + '</strong></p>';
+                    content += '<p><a href="/download/' + data.json_file + '" target="_blank">Download JSON Results</a></p>';
+                    content += '<p><a href="/download/' + data.txt_file + '" target="_blank">Download TXT Results</a></p>';
+                    content += '<p><a href="/download/' + data.csv_file + '" target="_blank">Download CSV Results (Ngram Analysis)</a></p>';
                     content += '<h3>Insights:</h3><ul>';
                     data.insights.forEach(function(insight) {
                         content += '<li>' + insight + '</li>';
@@ -91,9 +131,13 @@
             })
             .catch(error => {
                 loading.style.display = 'none';
-                results.innerHTML = '<p>Error: ' + error + '</p>';
+                errorDiv.textContent = 'Error: ' + error;
+                results.style.display = 'none';
             });
         });
+
+        // Load files when the page loads
+        loadFiles();
     </script>
 </body>
 </html>
