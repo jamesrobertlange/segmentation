@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>URL Analysis Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1e1e1e;
+            color: #ffffff;
+        }
+        h1, h2, h3 { color: #bb86fc; }
+        form { margin-bottom: 20px; }
+        input[type="file"], input[type="text"] {
+            background-color: #2e2e2e;
+            color: #ffffff;
+            border: 1px solid #bb86fc;
+            padding: 5px;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #bb86fc;
+            color: #1e1e1e;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background-color: #9966cc; }
+        #results { display: none; }
+        #loading { display: none; color: #03dac6; }
+        a { color: #03dac6; }
+        pre { background-color: #2e2e2e; padding: 10px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>URL Analysis Tool</h1>
+    <form id="upload-form" enctype="multipart/form-data">
+        <input type="text" name="client_name" placeholder="Client Name" required><br>
+        <input type="file" name="file" accept=".csv" required><br>
+        <button type="submit">Analyze URLs</button>
+    </form>
+    <div id="loading">Analyzing... This may take a while for large datasets.</div>
+    <div id="results"></div>
+
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            var formData = new FormData(this);
+            var loading = document.getElementById('loading');
+            var results = document.getElementById('results');
+            
+            loading.style.display = 'block';
+            results.style.display = 'none';
+            
+            fetch('/', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                loading.style.display = 'none';
+                results.style.display = 'block';
+                if (data.error) {
+                    results.innerHTML = '<p>Error: ' + data.error + '</p>';
+                } else {
+                    var content = '<h2>Analysis Results</h2>';
+                    content += '<p><a href="/download/' + data.json_file + '">Download JSON Results</a></p>';
+                    content += '<p><a href="/download/' + data.txt_file + '">Download TXT Results</a></p>';
+                    content += '<p><a href="/download/' + data.csv_file + '">Download CSV Results (Ngram Analysis)</a></p>';
+                    content += '<h3>Insights:</h3><ul>';
+                    data.insights.forEach(function(insight) {
+                        content += '<li>' + insight + '</li>';
+                    });
+                    content += '</ul><h3>Top 5 Segmentation Suggestions:</h3><pre>';
+                    data.segmentation_suggestions.forEach(function(suggestion) {
+                        content += suggestion + '\n\n';
+                    });
+                    content += '</pre>';
+                    content += '<h3>Top 10 Ngrams:</h3><ul>';
+                    for (var ngram in data.top_ngrams) {
+                        content += '<li>' + ngram + ': ' + data.top_ngrams[ngram] + '</li>';
+                    }
+                    content += '</ul>';
+                    results.innerHTML = content;
+                }
+            })
+            .catch(error => {
+                loading.style.display = 'none';
+                results.innerHTML = '<p>Error: ' + error + '</p>';
+            });
+        });
+    </script>
+</body>
+</html>
