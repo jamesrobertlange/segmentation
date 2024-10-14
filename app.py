@@ -232,31 +232,31 @@ def list_files():
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
-        client_name = request.form.get('client_name', 'unnamed_client')
-        
-        file_path = None
-        
-        if 'file' in request.files and request.files['file'].filename != '':
-            file = request.files['file']
-            if file and allowed_file(file.filename):
-                filename = secure_filename(file.filename)
-                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                file.save(file_path)
-        elif 'selected_file' in request.form and request.form['selected_file'] != '':
-            filename = request.form['selected_file']
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        
-        if not file_path:
-            return jsonify({'error': 'No file selected or uploaded'})
-        
-        # Process the file
         try:
+            client_name = request.form.get('client_name', 'unnamed_client')
+            
+            file_path = None
+            
+            if 'file' in request.files and request.files['file'].filename != '':
+                file = request.files['file']
+                if file and allowed_file(file.filename):
+                    filename = secure_filename(file.filename)
+                    file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    file.save(file_path)
+            elif 'selected_file' in request.form and request.form['selected_file'] != '':
+                filename = request.form['selected_file']
+                file_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            
+            if not file_path:
+                return jsonify({'error': 'No file selected or uploaded'}), 400
+            
+            # Process the file
             df = read_csv_with_custom_header(file_path)
             app.logger.info(f"CSV file read successfully. Shape: {df.shape}")
             url_columns = find_url_columns(df)
             
             if not url_columns:
-                return jsonify({'error': f"No column containing 'URL' found in the CSV file. Columns found: {', '.join(df.columns.tolist())}"})
+                return jsonify({'error': f"No column containing 'URL' found in the CSV file. Columns found: {', '.join(df.columns.tolist())}"}), 400
             
             # If multiple URL columns are found, use the first one
             url_column = url_columns[0]
@@ -285,7 +285,7 @@ def upload_file():
         except Exception as e:
             app.logger.error(f"Error processing file: {str(e)}")
             app.logger.error(traceback.format_exc())
-            return jsonify({'error': f"Error processing file: {str(e)}"})
+            return jsonify({'error': f"Error processing file: {str(e)}"}), 500
     
     return render_template('upload.html')
 
@@ -294,15 +294,5 @@ def download_file(filename):
     return send_file(os.path.join(app.config['RESULTS_FOLDER'], filename), as_attachment=True)
 
 if __name__ == '__main__':
-    # Use environment variable for port, defaulting to 5000 if not set
     port = int(os.environ.get('PORT', 5000))
-    
-    # Try ports in the range 5000-5010
-    for test_port in range(port, port + 10):
-        try:
-            app.run(host='0.0.0.0', port=test_port, debug=True)
-            break
-        except OSError as e:
-            print(f"Port {test_port} is in use, trying next port...")
-    else:
-        print("Unable to find an open port. Please free up a port or specify a different port range.")
+    app.run(host='0.0.0.0', port=port, debug=True)
