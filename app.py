@@ -15,6 +15,9 @@ from tqdm import tqdm
 
 app = Flask(__name__)
 
+# Increase maximum file size to 20MB
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB in bytes
+
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
 ALLOWED_EXTENSIONS = {'csv'}
@@ -291,4 +294,15 @@ def download_file(filename):
     return send_file(os.path.join(app.config['RESULTS_FOLDER'], filename), as_attachment=True)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Use environment variable for port, defaulting to 5000 if not set
+    port = int(os.environ.get('PORT', 5000))
+    
+    # Try ports in the range 5000-5010
+    for test_port in range(port, port + 10):
+        try:
+            app.run(host='0.0.0.0', port=test_port, debug=True)
+            break
+        except OSError as e:
+            print(f"Port {test_port} is in use, trying next port...")
+    else:
+        print("Unable to find an open port. Please free up a port or specify a different port range.")

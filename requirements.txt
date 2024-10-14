@@ -1,0 +1,5 @@
+Flask
+pandas
+aiohttp
+tqdm
+gunicorn
