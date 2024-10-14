@@ -2,7 +2,6 @@ import re
 from collections import Counter
 from urllib.parse import urlparse, parse_qs
 import traceback
-import json
 from datetime import datetime
 import asyncio
 import aiohttp
@@ -21,7 +20,7 @@ app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB in bytes
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
 ALLOWED_EXTENSIONS = {'csv'}
-CHUNK_SIZE = 10000  # Process URLs in chunks of 10000
+CHUNK_SIZE = 1000  # Reduced chunk size to process URLs faster
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['RESULTS_FOLDER'] = RESULTS_FOLDER
@@ -64,10 +63,11 @@ async def analyze_url(url, session):
             'query_param_count': len(parse_qs(parsed_url.query))
         }
         
-        domain_parts = parsed_url.netloc.split('.')
-        if len(domain_parts) > 2:
-            results['subdomain'] = '.'.join(domain_parts[:-2])
-        results['domain'] = '.'.join(domain_parts[-2:])
+        if parsed_url.netloc:
+            domain_parts = parsed_url.netloc.split('.')
+            if len(domain_parts) > 2:
+                results['subdomain'] = '.'.join(domain_parts[:-2])
+            results['domain'] = '.'.join(domain_parts[-2:])
         
         if '.' in parsed_url.path.split('/')[-1]:
             results['file_extension'] = parsed_url.path.split('/')[-1].split('.')[-1]
@@ -76,7 +76,7 @@ async def analyze_url(url, session):
         
         return results
     except Exception as e:
-        print(f"Error processing URL {url}: {str(e)}")
+        app.logger.error(f"Error processing URL {url}: {str(e)}")
         return None
 
 async def analyze_urls_chunk(urls):
@@ -140,12 +140,7 @@ def generate_insights(analysis_results):
     avg_query_params = sum(k*v for k,v in analysis_results['query_param_count'].items()) / total_urls
     insights.append(f"Average number of query parameters: {avg_query_params:.2f}")
     
-    segmentation_suggestions = []
-    for segment, count in analysis_results['segments'].most_common(10):
-        level, value = segment.split(':')
-        segmentation_suggestions.append(f"@{value}\npath */{value}/*")
-    
-    return insights, segmentation_suggestions
+    return insights
 
 def ngram_analysis(urls, n=2, min_count=5):
     ngrams = Counter()
@@ -158,41 +153,28 @@ def ngram_analysis(urls, n=2, min_count=5):
     
     return {ngram: count for ngram, count in ngrams.items() if count >= min_count}
 
-async def main(urls):
-    try:
-        chunk_results = []
-        for i in tqdm(range(0, len(urls), CHUNK_SIZE), desc="Processing URL chunks"):
-            chunk = urls[i:i+CHUNK_SIZE]
-            chunk_result = await analyze_urls_chunk(chunk)
-            chunk_results.extend(chunk_result)
-        
-        analysis_results = merge_results(chunk_results)
-        insights, segmentation_suggestions = generate_insights(analysis_results)
-        
-        ngrams = ngram_analysis(urls)
-        
-        return {
-            'analysis': analysis_results,
-            'insights': insights,
-            'segmentation_suggestions': segmentation_suggestions,
-            'ngrams': ngrams
-        }
-    except Exception as e:
-        return {
-            'error': str(e),
-            'traceback': traceback.format_exc()
-        }
+async def process_urls(urls):
+    chunk_results = []
+    for i in tqdm(range(0, len(urls), CHUNK_SIZE), desc="Processing URL chunks"):
+        chunk = urls[i:i+CHUNK_SIZE]
+        chunk_result = await analyze_urls_chunk(chunk)
+        chunk_results.extend(chunk_result)
+    
+    analysis_results = merge_results(chunk_results)
+    insights = generate_insights(analysis_results)
+    ngrams = ngram_analysis(urls)
+    
+    return {
+        'analysis': analysis_results,
+        'insights': insights,
+        'ngrams': ngrams
+    }
 
 def export_results(result, format, client_name):
     date_str = datetime.now().strftime("%Y%m%d")
     filename_base = f"url_analysis_{client_name}_{date_str}"
     
-    if format == 'json':
-        filename = f"{filename_base}.json"
-        file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
-        with open(file_path, 'w') as f:
-            json.dump(result, f, indent=2, default=lambda x: list(x.items()) if isinstance(x, Counter) else x)
-    elif format == 'txt':
+    if format == 'txt':
         filename = f"{filename_base}.txt"
         file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
         with open(file_path, 'w') as f:
@@ -210,7 +192,7 @@ def export_results(result, format, client_name):
                     f.write(f"  {item}: {count}\n")
                 f.write("\n")
             f.write("Ngram Analysis:\n")
-            for ngram, count in sorted(result['ngrams'].items(), key=lambda x: x[1], reverse=True):
+            for ngram, count in sorted(result['ngrams'].items(), key=lambda x: x[1], reverse=True)[:20]:
                 f.write(f"  {ngram}: {count}\n")
     elif format == 'csv':
         filename = f"{filename_base}.csv"
@@ -220,14 +202,6 @@ def export_results(result, format, client_name):
         df.to_csv(file_path, index=False)
     
     return filename
-
-def find_url_columns(df):
-    return [col for col in df.columns if 'url' in col.lower()]
-
-@app.route('/list_files', methods=['GET'])
-def list_files():
-    files = [f for f in os.listdir(UPLOAD_FOLDER) if allowed_file(f)]
-    return jsonify(files)
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -262,23 +236,28 @@ def upload_file():
             url_column = url_columns[0]
             urls = df[url_column].dropna().tolist()
             
-            # Run the analysis
+            # Run the analysis asynchronously
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            results = loop.run_until_complete(main(urls))
+            results = loop.run_until_complete(process_urls(urls))
+            
+            # Generate insights and segmentation suggestions
+            insights = results['insights']
+            segmentation_suggestions = [f"@{segment}\npath */{segment}/*" for segment, _ in results['analysis']['segments'].most_common(5)]
+            
+            # Add segmentation suggestions to results
+            results['segmentation_suggestions'] = segmentation_suggestions
             
             # Export results
-            json_file = export_results(results, 'json', client_name)
             txt_file = export_results(results, 'txt', client_name)
             csv_file = export_results(results, 'csv', client_name)
             
             return jsonify({
                 'message': 'Analysis complete',
-                'json_file': json_file,
                 'txt_file': txt_file,
                 'csv_file': csv_file,
-                'insights': results['insights'],
-                'segmentation_suggestions': results['segmentation_suggestions'][:5],
+                'insights': insights,
+                'segmentation_suggestions': segmentation_suggestions,
                 'top_ngrams': dict(sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]),
                 'url_column_used': url_column
             })
@@ -289,10 +268,15 @@ def upload_file():
     
     return render_template('upload.html')
 
+@app.route('/list_files', methods=['GET'])
+def list_files():
+    files = [f for f in os.listdir(UPLOAD_FOLDER) if allowed_file(f)]
+    return jsonify(files)
+
 @app.route('/download/<filename>')
 def download_file(filename):
     return send_file(os.path.join(app.config['RESULTS_FOLDER'], filename), as_attachment=True)
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
