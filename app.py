@@ -15,8 +15,8 @@ import logging
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Increase maximum file size to 20MB
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB in bytes
+# Remove the file size limit
+# app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # This line should be commented out or removed
 
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
@@ -222,6 +222,7 @@ def process_urls_sync(urls):
 def upload_file():
     if request.method == 'POST':
         try:
+            start_time = datetime.now()
             client_name = request.form.get('client_name', 'unnamed_client')
             
             file_path = None
@@ -265,6 +266,9 @@ def upload_file():
             txt_file = export_results(results, 'txt', client_name)
             csv_file = export_results(results, 'csv', client_name)
             
+            end_time = datetime.now()
+            processing_time = (end_time - start_time).total_seconds()
+            
             return jsonify({
                 'message': 'Analysis complete',
                 'txt_file': txt_file,
@@ -272,7 +276,9 @@ def upload_file():
                 'insights': insights,
                 'segmentation_suggestions': segmentation_suggestions,
                 'top_ngrams': dict(sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]),
-                'url_column_used': url_column
+                'url_column_used': url_column,
+                'processing_time_seconds': processing_time,
+                'file_size_mb': os.path.getsize(file_path) / (1024 * 1024)
             })
         except Exception as e:
             app.logger.error(f"Error processing file: {str(e)}")
