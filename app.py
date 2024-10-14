@@ -10,9 +10,10 @@ import csv
 from flask import Flask, request, jsonify, render_template, send_file
 from werkzeug.utils import secure_filename
 import os
-from tqdm import tqdm
+import logging
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Increase maximum file size to 20MB
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB in bytes
@@ -37,14 +38,18 @@ def find_url_columns(df):
     return url_columns
 
 def read_csv_with_custom_header(file_path):
-    with open(file_path, 'r') as f:
-        first_line = f.readline().strip()
-        if first_line.startswith('sep='):
-            separator = first_line[-1]
-            df = pd.read_csv(file_path, sep=separator, skiprows=[0])
-        else:
-            df = pd.read_csv(file_path)
-    return df
+    try:
+        with open(file_path, 'r') as f:
+            first_line = f.readline().strip()
+            if first_line.startswith('sep='):
+                separator = first_line[-1]
+                df = pd.read_csv(file_path, sep=separator, skiprows=[0])
+            else:
+                df = pd.read_csv(file_path)
+        return df
+    except Exception as e:
+        app.logger.error(f"Error reading CSV file: {str(e)}")
+        raise
 
 async def analyze_url(url, session):
     try:
@@ -155,10 +160,13 @@ def ngram_analysis(urls, n=2, min_count=5):
 
 async def process_urls(urls):
     chunk_results = []
-    for i in tqdm(range(0, len(urls), CHUNK_SIZE), desc="Processing URL chunks"):
+    for i in range(0, len(urls), CHUNK_SIZE):
         chunk = urls[i:i+CHUNK_SIZE]
         chunk_result = await analyze_urls_chunk(chunk)
         chunk_results.extend(chunk_result)
+        
+        # Yield control to allow other tasks to run
+        await asyncio.sleep(0)
     
     analysis_results = merge_results(chunk_results)
     insights = generate_insights(analysis_results)
@@ -203,6 +211,13 @@ def export_results(result, format, client_name):
     
     return filename
 
+def process_urls_sync(urls):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    results = loop.run_until_complete(process_urls(urls))
+    loop.close()
+    return results
+
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
@@ -236,10 +251,8 @@ def upload_file():
             url_column = url_columns[0]
             urls = df[url_column].dropna().tolist()
             
-            # Run the analysis asynchronously
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            results = loop.run_until_complete(process_urls(urls))
+            # Run the analysis synchronously
+            results = process_urls_sync(urls)
             
             # Generate insights and segmentation suggestions
             insights = results['insights']
