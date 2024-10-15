@@ -110,14 +110,16 @@
                 } else {
                     results.style.display = 'block';
                     var content = '<h2>Analysis Results</h2>';
-                    content += '<p>URL column used: <strong>' + data.url_column_used + '</strong></p>';
+                    content += '<p>Total URLs processed: <strong>' + data.total_urls_processed + '</strong></p>';
                     content += '<p><a href="/download/' + data.txt_file + '" target="_blank">Download TXT Results</a></p>';
                     content += '<p><a href="/download/' + data.csv_file + '" target="_blank">Download CSV Results (Ngram Analysis)</a></p>';
+                    content += '<p><a href="/download/' + data.botify_file + '" target="_blank">Download Botify Segmentation Rules</a></p>';
+                    content += '<p><a href="/download/' + data.markdown_file + '" target="_blank">Download All Segmentation Recommendations (Markdown)</a></p>';
                     content += '<h3>Insights:</h3><ul>';
                     data.insights.forEach(function(insight) {
                         content += '<li>' + insight + '</li>';
                     });
-                    content += '</ul><h3>Top 5 Segmentation Suggestions:</h3><pre>';
+                    content += '</ul><h3>Top 10 Segmentation Suggestions:</h3><pre>';
                     data.segmentation_suggestions.forEach(function(suggestion) {
                         content += suggestion + '\n\n';
                     });

@@ -13,6 +13,7 @@ from werkzeug.utils import secure_filename
 import os
 import logging
 import io
+from botify_segmentation import generate_botify_segmentation, export_botify_segmentation, export_segmentation_markdown
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -85,7 +86,7 @@ async def analyze_url(url):
         if '.' in parsed_url.path.split('/')[-1]:
             results['file_extension'] = parsed_url.path.split('/')[-1].split('.')[-1]
         
-        results['segments'] = [f"level_{i+1}:{seg}" for i, seg in enumerate(parsed_url.path.split('/')) if seg]
+        results['segments'] = [f"{seg}" for seg in parsed_url.path.split('/') if seg]
         
         return results
     except Exception as e:
@@ -131,7 +132,7 @@ def generate_insights(analysis_results):
     insights = []
     
     total_urls = sum(analysis_results['domains'].values())
-    insights.append(f"Total URLs analyzed: {total_urls}")
+    insights.append(f"Total URLs analyzed: {total_urls:,}")
     
     if analysis_results['protocol']:
         insights.append(f"Most common protocol: {analysis_results['protocol'].most_common(1)[0][0]}")
@@ -199,6 +200,12 @@ def process_urls_sync(urls):
     asyncio.set_event_loop(loop)
     results = loop.run_until_complete(process_urls(urls))
     loop.close()
+    
+    # Generate Botify segmentation
+    botify_segmentation, all_segments = generate_botify_segmentation(urls)
+    results['botify_segmentation'] = botify_segmentation
+    results['all_segments'] = all_segments
+    
     return results
 
 def export_results(result, format, client_name):
@@ -216,15 +223,17 @@ def export_results(result, format, client_name):
             f.write("\nSegmentation Suggestions:\n")
             for suggestion in result['segmentation_suggestions']:
                 f.write(f"{suggestion}\n\n")
-            f.write("Full Analysis:\n")
+            f.write("Botify Segmentation Rules:\n")
+            f.write(result['botify_segmentation'])
+            f.write("\n\nFull Analysis:\n")
             for key, value in result['analysis'].items():
                 f.write(f"{key}:\n")
                 for item, count in value.most_common(20):  # Limit to top 20 for readability
-                    f.write(f"  {item}: {count}\n")
+                    f.write(f"  {item}: {count:,}\n")
                 f.write("\n")
             f.write("Ngram Analysis:\n")
             for ngram, count in sorted(result['ngrams'].items(), key=lambda x: x[1], reverse=True)[:20]:
-                f.write(f"  {ngram}: {count}\n")
+                f.write(f"  {ngram}: {count:,}\n")
     elif format == 'csv':
         filename = f"{filename_base}.csv"
         file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
@@ -232,7 +241,17 @@ def export_results(result, format, client_name):
         df = df.sort_values('Count', ascending=False)
         df.to_csv(file_path, index=False)
     
-    return filename
+    # Export Botify segmentation rules
+    botify_filename = f"botify_segmentation_{client_name}_{date_str}.txt"
+    botify_file_path = os.path.join(app.config['RESULTS_FOLDER'], botify_filename)
+    export_botify_segmentation(result['botify_segmentation'], botify_file_path)
+    
+    # Export all segmentation recommendations as markdown
+    markdown_filename = f"all_segmentation_{client_name}_{date_str}.md"
+    markdown_file_path = os.path.join(app.config['RESULTS_FOLDER'], markdown_filename)
+    export_segmentation_markdown(result['all_segments'], markdown_file_path)
+    
+    return filename, botify_filename, markdown_filename
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
@@ -265,12 +284,12 @@ def upload_file():
             results = process_urls_sync(all_urls)
             
             insights = results['insights']
-            segmentation_suggestions = [f"@{segment}\npath */{segment}/*" for segment, _ in results['analysis']['segments'].most_common(5)]
+            segmentation_suggestions = [f"@{segment}\npath */{segment}/*" for segment, _ in results['analysis']['segments'].most_common(10)]
             
             results['segmentation_suggestions'] = segmentation_suggestions
             
-            txt_file = export_results(results, 'txt', client_name)
-            csv_file = export_results(results, 'csv', client_name)
+            txt_file, botify_file, markdown_file = export_results(results, 'txt', client_name)
+            csv_file, _, _ = export_results(results, 'csv', client_name)
             
             end_time = datetime.now()
             processing_time = (end_time - start_time).total_seconds()
@@ -279,12 +298,14 @@ def upload_file():
                 'message': 'Analysis complete',
                 'txt_file': txt_file,
                 'csv_file': csv_file,
+                'botify_file': botify_file,
+                'markdown_file': markdown_file,
                 'insights': insights,
                 'segmentation_suggestions': segmentation_suggestions,
-                'top_ngrams': dict(sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]),
+                'top_ngrams': {k: f"{v:,}" for k, v in sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]},
                 'processing_time_seconds': processing_time,
                 'file_size_mb': os.path.getsize(file_path) / (1024 * 1024),
-                'total_urls_processed': len(all_urls)
+                'total_urls_processed': f"{len(all_urls):,}"
             }
             
             return jsonify(response_data)
