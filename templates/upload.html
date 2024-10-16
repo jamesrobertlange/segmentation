@@ -31,6 +31,7 @@
             cursor: pointer;
             font-size: 16px;
             margin-right: 10px;
+            margin-bottom: 10px;
         }
         button:hover { background-color: #9966cc; }
         #results { display: none; }
@@ -53,6 +54,8 @@
         <button type="submit">Analyze URLs</button>
         <button type="button" id="refresh-files">Refresh File List</button>
     </form>
+    <button id="delete-files">Delete All Files</button>
+    <button id="refresh-deployment">Refresh Deployment</button>
     <div id="error" class="error"></div>
     <div id="loading">Analyzing... This may take a while for large datasets.</div>
     <div id="results"></div>
@@ -138,6 +141,64 @@
                 results.style.display = 'none';
             });
         });
+
+        document.getElementById('delete-files').addEventListener('click', function() {
+            if (confirm('Are you sure you want to delete all files? This action cannot be undone.')) {
+                fetch('/delete_files', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(data.message);
+                        // Refresh the file list after deletion
+                        loadFiles();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while deleting files.');
+                    });
+            }
+        });
+
+        document.getElementById('refresh-deployment').addEventListener('click', function() {
+        if (confirm('Are you sure you want to refresh the deployment? This will restart the application.')) {
+            fetch('/refresh_deployment', { method: 'POST' })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(err => { throw err; });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    alert(data.message || 'Deployment refresh initiated. The page will reload shortly.');
+                    checkServerAndReload();
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    alert(error.error || 'An error occurred while refreshing the deployment. The application may still be restarting.');
+                    checkServerAndReload();
+                });
+        }
+    });
+
+    function checkServerAndReload() {
+        let attempts = 0;
+        const maxAttempts = 30; // Try for about 30 seconds
+        const interval = setInterval(() => {
+            fetch('/')
+                .then(response => {
+                    if (response.ok) {
+                        clearInterval(interval);
+                        location.reload();
+                    }
+                })
+                .catch(() => {
+                    attempts++;
+                    if (attempts >= maxAttempts) {
+                        clearInterval(interval);
+                        alert('Server seems to be taking longer than expected to restart. Please try reloading the page manually.');
+                    }
+                });
+        }, 1000); // Check every second
+    }
 
         // Load files when the page loads
         loadFiles();

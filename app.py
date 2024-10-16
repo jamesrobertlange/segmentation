@@ -7,12 +7,16 @@ import asyncio
 import aiohttp
 import pandas as pd
 import csv
+import subprocess
 import json
 from flask import Flask, request, jsonify, render_template, send_file, Response
 from werkzeug.utils import secure_filename
 import os
+import shutil
 import logging
 import io
+import sys
+import signal  # Add this import
 from botify_segmentation import generate_botify_segmentation, export_botify_segmentation, export_segmentation_markdown
 
 app = Flask(__name__)
@@ -325,6 +329,48 @@ def list_files():
 @app.route('/download/<filename>')
 def download_file(filename):
     return send_file(os.path.join(app.config['RESULTS_FOLDER'], filename), as_attachment=True)
+
+@app.route('/delete_files', methods=['POST'])
+def delete_files():
+    try:
+        # Delete all files in the uploads folder except for sample.csv
+        for filename in os.listdir(UPLOAD_FOLDER):
+            if filename != 'sample.csv':
+                file_path = os.path.join(UPLOAD_FOLDER, filename)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
+        # Delete all files in the results folder
+        for filename in os.listdir(RESULTS_FOLDER):
+            file_path = os.path.join(RESULTS_FOLDER, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        return jsonify({'message': 'All files deleted successfully'}), 200
+    except Exception as e:
+        app.logger.error(f"Error deleting files: {str(e)}")
+        return jsonify({'error': f"Error deleting files: {str(e)}"}), 500
+
+def is_development():
+    return not os.environ.get('FLASK_ENV') == 'production'
+
+@app.route('/refresh_deployment', methods=['POST'])
+def refresh_deployment():
+    if is_development():
+        # In development, start a new process and exit the current one
+        subprocess.Popen([sys.executable] + sys.argv)
+        os._exit(0)
+    else:
+        try:
+            # In production (e.g., Gunicorn), send SIGHUP to parent
+            os.kill(os.getppid(), signal.SIGHUP)
+            return jsonify({'message': 'Deployment refreshed successfully'}), 200
+        except PermissionError:
+            app.logger.error("Permission denied when trying to send SIGHUP signal")
+            return jsonify({'error': "Permission denied. Cannot refresh deployment."}), 403
+        except Exception as e:
+            app.logger.error(f"Error refreshing deployment: {str(e)}")
+            return jsonify({'error': f"Error refreshing deployment: {str(e)}"}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
