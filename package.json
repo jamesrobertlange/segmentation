@@ -1,0 +1,25 @@
+{
+  "name": "url-analysis-tool",
+  "version": "1.0.0",
+  "description": "A tool to analyze URLs from CSV files, providing insights, segmentation suggestions, and ngram analysis",
+  "main": "app.py",
+  "scripts": {
+    "start": "gunicorn app:app -c gunicorn.conf.py",
+    "dev": "python app.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/url-analysis-tool.git"
+  },
+  "keywords": [
+    "url-analysis",
+    "seo",
+    "python",
+    "flask"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "python": ">=3.7.0"
+  }
+}

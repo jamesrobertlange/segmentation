@@ -7,21 +7,22 @@ import asyncio
 import aiohttp
 import pandas as pd
 import csv
-from flask import Flask, request, jsonify, render_template, send_file
+import json
+from flask import Flask, request, jsonify, render_template, send_file, Response
 from werkzeug.utils import secure_filename
 import os
+import shutil
 import logging
+import io
+from botify_segmentation import generate_botify_segmentation, export_botify_segmentation, export_segmentation_markdown
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# Increase maximum file size to 20MB
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB in bytes
-
 UPLOAD_FOLDER = 'uploads'
 RESULTS_FOLDER = 'results'
 ALLOWED_EXTENSIONS = {'csv'}
-CHUNK_SIZE = 1000  # Reduced chunk size to process URLs faster
+CHUNK_SIZE = 1000  # Process URLs in chunks of 1000
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['RESULTS_FOLDER'] = RESULTS_FOLDER
@@ -33,25 +34,34 @@ def allowed_file(filename):
 
 def find_url_columns(df):
     url_columns = [col for col in df.columns if 'url' in col.lower()]
-    app.logger.info(f"Columns in DataFrame: {df.columns.tolist()}")
-    app.logger.info(f"URL columns found: {url_columns}")
+    if not url_columns:
+        app.logger.warning(f"No URL column found. Columns in DataFrame: {df.columns.tolist()}")
     return url_columns
 
-def read_csv_with_custom_header(file_path):
-    try:
-        with open(file_path, 'r') as f:
-            first_line = f.readline().strip()
-            if first_line.startswith('sep='):
-                separator = first_line[-1]
-                df = pd.read_csv(file_path, sep=separator, skiprows=[0])
-            else:
-                df = pd.read_csv(file_path)
-        return df
-    except Exception as e:
-        app.logger.error(f"Error reading CSV file: {str(e)}")
-        raise
+def process_csv_chunk(chunk):
+    url_columns = find_url_columns(chunk)
+    if not url_columns:
+        return None
+    url_column = url_columns[0]
+    urls = chunk[url_column].dropna().tolist()
+    return urls
 
-async def analyze_url(url, session):
+def read_csv_with_custom_header(file_path):
+    with open(file_path, 'r') as f:
+        first_line = f.readline().strip()
+        if first_line.startswith('sep='):
+            separator = first_line[-1]
+            df = pd.read_csv(file_path, sep=separator, skiprows=[0])
+        else:
+            df = pd.read_csv(file_path)
+    return df
+
+def stream_csv(file_path):
+    df = read_csv_with_custom_header(file_path)
+    for i in range(0, len(df), CHUNK_SIZE):
+        yield df[i:i+CHUNK_SIZE]
+
+async def analyze_url(url):
     try:
         parsed_url = urlparse(url)
         
@@ -77,7 +87,7 @@ async def analyze_url(url, session):
         if '.' in parsed_url.path.split('/')[-1]:
             results['file_extension'] = parsed_url.path.split('/')[-1].split('.')[-1]
         
-        results['segments'] = [f"level_{i+1}:{seg}" for i, seg in enumerate(parsed_url.path.split('/')) if seg]
+        results['segments'] = [f"{seg}" for seg in parsed_url.path.split('/') if seg]
         
         return results
     except Exception as e:
@@ -86,7 +96,7 @@ async def analyze_url(url, session):
 
 async def analyze_urls_chunk(urls):
     async with aiohttp.ClientSession() as session:
-        tasks = [analyze_url(url, session) for url in urls]
+        tasks = [analyze_url(url) for url in urls]
         results = await asyncio.gather(*tasks)
     return [r for r in results if r is not None]
 
@@ -123,15 +133,22 @@ def generate_insights(analysis_results):
     insights = []
     
     total_urls = sum(analysis_results['domains'].values())
-    insights.append(f"Total URLs analyzed: {total_urls}")
-    insights.append(f"Most common protocol: {analysis_results['protocol'].most_common(1)[0][0]}")
+    insights.append(f"Total URLs analyzed: {total_urls:,}")
+    
+    if analysis_results['protocol']:
+        insights.append(f"Most common protocol: {analysis_results['protocol'].most_common(1)[0][0]}")
     
     if analysis_results['subdomains']:
         insights.append(f"Most common subdomain: {analysis_results['subdomains'].most_common(1)[0][0]}")
     
-    insights.append(f"Most common domain: {analysis_results['domains'].most_common(1)[0][0]}")
-    insights.append(f"Most common path: {analysis_results['paths'].most_common(1)[0][0]}")
-    insights.append(f"Most common path without parameters: {analysis_results['paths_without_params'].most_common(1)[0][0]}")
+    if analysis_results['domains']:
+        insights.append(f"Most common domain: {analysis_results['domains'].most_common(1)[0][0]}")
+    
+    if analysis_results['paths']:
+        insights.append(f"Most common path: {analysis_results['paths'].most_common(1)[0][0]}")
+    
+    if analysis_results['paths_without_params']:
+        insights.append(f"Most common path without parameters: {analysis_results['paths_without_params'].most_common(1)[0][0]}")
     
     if analysis_results['query_params']:
         insights.append(f"Most common query parameter: {analysis_results['query_params'].most_common(1)[0][0]}")
@@ -139,11 +156,12 @@ def generate_insights(analysis_results):
     if analysis_results['file_extensions']:
         insights.append(f"Most common file extension: {analysis_results['file_extensions'].most_common(1)[0][0]}")
     
-    avg_path_depth = sum(k*v for k,v in analysis_results['path_length'].items()) / total_urls
-    insights.append(f"Average path depth: {avg_path_depth:.2f}")
-    
-    avg_query_params = sum(k*v for k,v in analysis_results['query_param_count'].items()) / total_urls
-    insights.append(f"Average number of query parameters: {avg_query_params:.2f}")
+    if total_urls > 0:
+        avg_path_depth = sum(k*v for k,v in analysis_results['path_length'].items()) / total_urls
+        insights.append(f"Average path depth: {avg_path_depth:.2f}")
+        
+        avg_query_params = sum(k*v for k,v in analysis_results['query_param_count'].items()) / total_urls
+        insights.append(f"Average number of query parameters: {avg_query_params:.2f}")
     
     return insights
 
@@ -178,6 +196,19 @@ async def process_urls(urls):
         'ngrams': ngrams
     }
 
+def process_urls_sync(urls):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    results = loop.run_until_complete(process_urls(urls))
+    loop.close()
+    
+    # Generate Botify segmentation
+    botify_segmentation, all_segments = generate_botify_segmentation(urls)
+    results['botify_segmentation'] = botify_segmentation
+    results['all_segments'] = all_segments
+    
+    return results
+
 def export_results(result, format, client_name):
     date_str = datetime.now().strftime("%Y%m%d")
     filename_base = f"url_analysis_{client_name}_{date_str}"
@@ -193,15 +224,17 @@ def export_results(result, format, client_name):
             f.write("\nSegmentation Suggestions:\n")
             for suggestion in result['segmentation_suggestions']:
                 f.write(f"{suggestion}\n\n")
-            f.write("Full Analysis:\n")
+            f.write("Botify Segmentation Rules:\n")
+            f.write(result['botify_segmentation'])
+            f.write("\n\nFull Analysis:\n")
             for key, value in result['analysis'].items():
                 f.write(f"{key}:\n")
                 for item, count in value.most_common(20):  # Limit to top 20 for readability
-                    f.write(f"  {item}: {count}\n")
+                    f.write(f"  {item}: {count:,}\n")
                 f.write("\n")
             f.write("Ngram Analysis:\n")
             for ngram, count in sorted(result['ngrams'].items(), key=lambda x: x[1], reverse=True)[:20]:
-                f.write(f"  {ngram}: {count}\n")
+                f.write(f"  {ngram}: {count:,}\n")
     elif format == 'csv':
         filename = f"{filename_base}.csv"
         file_path = os.path.join(app.config['RESULTS_FOLDER'], filename)
@@ -209,19 +242,23 @@ def export_results(result, format, client_name):
         df = df.sort_values('Count', ascending=False)
         df.to_csv(file_path, index=False)
     
-    return filename
-
-def process_urls_sync(urls):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    results = loop.run_until_complete(process_urls(urls))
-    loop.close()
-    return results
+    # Export Botify segmentation rules
+    botify_filename = f"botify_segmentation_{client_name}_{date_str}.txt"
+    botify_file_path = os.path.join(app.config['RESULTS_FOLDER'], botify_filename)
+    export_botify_segmentation(result['botify_segmentation'], botify_file_path)
+    
+    # Export all segmentation recommendations as markdown
+    markdown_filename = f"all_segmentation_{client_name}_{date_str}.md"
+    markdown_file_path = os.path.join(app.config['RESULTS_FOLDER'], markdown_filename)
+    export_segmentation_markdown(result['all_segments'], markdown_file_path)
+    
+    return filename, botify_filename, markdown_filename
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
     if request.method == 'POST':
         try:
+            start_time = datetime.now()
             client_name = request.form.get('client_name', 'unnamed_client')
             
             file_path = None
@@ -239,41 +276,41 @@ def upload_file():
             if not file_path:
                 return jsonify({'error': 'No file selected or uploaded'}), 400
             
-            # Process the file
-            df = read_csv_with_custom_header(file_path)
-            app.logger.info(f"CSV file read successfully. Shape: {df.shape}")
-            url_columns = find_url_columns(df)
+            all_urls = []
+            for chunk in stream_csv(file_path):
+                urls = process_csv_chunk(chunk)
+                if urls:
+                    all_urls.extend(urls)
             
-            if not url_columns:
-                return jsonify({'error': f"No column containing 'URL' found in the CSV file. Columns found: {', '.join(df.columns.tolist())}"}), 400
+            results = process_urls_sync(all_urls)
             
-            # If multiple URL columns are found, use the first one
-            url_column = url_columns[0]
-            urls = df[url_column].dropna().tolist()
-            
-            # Run the analysis synchronously
-            results = process_urls_sync(urls)
-            
-            # Generate insights and segmentation suggestions
             insights = results['insights']
-            segmentation_suggestions = [f"@{segment}\npath */{segment}/*" for segment, _ in results['analysis']['segments'].most_common(5)]
+            segmentation_suggestions = [f"@{segment}\npath */{segment}/*" for segment, _ in results['analysis']['segments'].most_common(10)]
             
-            # Add segmentation suggestions to results
             results['segmentation_suggestions'] = segmentation_suggestions
             
-            # Export results
-            txt_file = export_results(results, 'txt', client_name)
-            csv_file = export_results(results, 'csv', client_name)
+            txt_file, botify_file, markdown_file = export_results(results, 'txt', client_name)
+            csv_file, _, _ = export_results(results, 'csv', client_name)
             
-            return jsonify({
+            end_time = datetime.now()
+            processing_time = (end_time - start_time).total_seconds()
+            
+            response_data = {
                 'message': 'Analysis complete',
                 'txt_file': txt_file,
                 'csv_file': csv_file,
+                'botify_file': botify_file,
+                'markdown_file': markdown_file,
                 'insights': insights,
                 'segmentation_suggestions': segmentation_suggestions,
-                'top_ngrams': dict(sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]),
-                'url_column_used': url_column
-            })
+                'top_ngrams': {k: f"{v:,}" for k, v in sorted(results['ngrams'].items(), key=lambda x: x[1], reverse=True)[:10]},
+                'processing_time_seconds': processing_time,
+                'file_size_mb': os.path.getsize(file_path) / (1024 * 1024),
+                'total_urls_processed': f"{len(all_urls):,}"
+            }
+            
+            return jsonify(response_data)
+        
         except Exception as e:
             app.logger.error(f"Error processing file: {str(e)}")
             app.logger.error(traceback.format_exc())
@@ -289,6 +326,30 @@ def list_files():
 @app.route('/download/<filename>')
 def download_file(filename):
     return send_file(os.path.join(app.config['RESULTS_FOLDER'], filename), as_attachment=True)
+
+@app.route('/delete_files', methods=['POST'])
+def delete_files():
+    try:
+        # Delete all files in the uploads folder except for sample.csv
+        for filename in os.listdir(UPLOAD_FOLDER):
+            if filename != 'sample-pagelist.csv':
+                file_path = os.path.join(UPLOAD_FOLDER, filename)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
+        # Delete all files in the results folder
+        for filename in os.listdir(RESULTS_FOLDER):
+            file_path = os.path.join(RESULTS_FOLDER, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        return jsonify({'message': 'All files deleted successfully'}), 200
+    except Exception as e:
+        app.logger.error(f"Error deleting files: {str(e)}")
+        return jsonify({'error': f"Error deleting files: {str(e)}"}), 500
+
+def is_development():
+    return not os.environ.get('FLASK_ENV') == 'production'
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>URL Analysis Tool</title>
+    <title>Botify URL Analysis Tool</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -31,6 +31,7 @@
             cursor: pointer;
             font-size: 16px;
             margin-right: 10px;
+            margin-bottom: 10px;
         }
         button:hover { background-color: #9966cc; }
         #results { display: none; }
@@ -41,8 +42,9 @@
     </style>
 </head>
 <body>
-    <h1>URL Analysis Tool</h1>
-    <h3>Limit of 20mb CSVs with the tool.</h3>
+    <h1>Botify URL Analysis Tool</h1>
+    <h2>Add in a CSV with a URL column to use the tool.</h2>
+    <h3>Soft limit of 35mb per CSV with the tool.</h3>
     <form id="upload-form" enctype="multipart/form-data">
         <input type="text" name="client_name" placeholder="Client Name" required><br>
         <input type="file" name="file" accept=".csv" id="file-upload"><br>
@@ -52,6 +54,8 @@
         <button type="submit">Analyze URLs</button>
         <button type="button" id="refresh-files">Refresh File List</button>
     </form>
+    <button id="delete-files">Delete All Files</button>
+    <p><strong>Note:</strong> To refresh the deployment, use Render.com's deploy hooks or manual deploy option in the Render dashboard.</p>
     <div id="error" class="error"></div>
     <div id="loading">Analyzing... This may take a while for large datasets.</div>
     <div id="results"></div>
@@ -109,14 +113,16 @@
                 } else {
                     results.style.display = 'block';
                     var content = '<h2>Analysis Results</h2>';
-                    content += '<p>URL column used: <strong>' + data.url_column_used + '</strong></p>';
+                    content += '<p>Total URLs processed: <strong>' + data.total_urls_processed + '</strong></p>';
                     content += '<p><a href="/download/' + data.txt_file + '" target="_blank">Download TXT Results</a></p>';
                     content += '<p><a href="/download/' + data.csv_file + '" target="_blank">Download CSV Results (Ngram Analysis)</a></p>';
+                    content += '<p><a href="/download/' + data.botify_file + '" target="_blank">Download Botify Segmentation Rules</a></p>';
+                    content += '<p><a href="/download/' + data.markdown_file + '" target="_blank">Download All Segmentation Recommendations (Markdown)</a></p>';
                     content += '<h3>Insights:</h3><ul>';
                     data.insights.forEach(function(insight) {
                         content += '<li>' + insight + '</li>';
                     });
-                    content += '</ul><h3>Top 5 Segmentation Suggestions:</h3><pre>';
+                    content += '</ul><h3>Top 10 Segmentation Suggestions:</h3><pre>';
                     data.segmentation_suggestions.forEach(function(suggestion) {
                         content += suggestion + '\n\n';
                     });
@@ -134,6 +140,22 @@
                 errorDiv.textContent = 'Error: ' + error;
                 results.style.display = 'none';
             });
+        });
+
+        document.getElementById('delete-files').addEventListener('click', function() {
+            if (confirm('Are you sure you want to delete all files? This action cannot be undone.')) {
+                fetch('/delete_files', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        alert(data.message);
+                        // Refresh the file list after deletion
+                        loadFiles();
+                    })
+                    .catch(error => {
+                        console.error('Error:', error);
+                        alert('An error occurred while deleting files.');
+                    });
+            }
         });
 
         // Load files when the page loads

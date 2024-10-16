@@ -1,9 +1,23 @@
 services:
   - type: web
-    name: url-analysis-tool
+    name: url-analysis-tool-test
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app -c gunicorn.conf.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.9.2
+    disk:
+      name: uploads
+      mountPath: /opt/render/project/src/uploads
+      sizeGB: 1
+    headers:
+      - path: /*
+        name: Content-Security-Policy
+        value: "upgrade-insecure-requests"
+    httpHeaders:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+    # Add this line to increase the maximum upload size to 300MB
+    maxUploadSize: 300
